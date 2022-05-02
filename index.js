@@ -3,10 +3,16 @@ import { Logger, Strings, System } from 'cafe-utility'
 import chalk from 'chalk'
 import Wallet from 'ethereumjs-wallet'
 
-let lastKnownIndex = -1
+const USE_LOAD_BALANCER = true
+const USE_FEEDS = false
+const FEED_TYPE = 'sequence'
 
-const HOST = 'https://api.gateway.ethswarm.org'
-// const HOST = 'https://gateway-proxy-bee-1-0.gateway.ethswarm.org'
+const UPLOADER_HOST = USE_LOAD_BALANCER
+    ? 'https://api.gateway.ethswarm.org'
+    : 'https://gateway-proxy-bee-3-0.gateway.ethswarm.org'
+const DOWNLOADER_HOST = USE_LOAD_BALANCER
+    ? 'https://api.gateway.ethswarm.org'
+    : 'https://gateway-proxy-bee-4-0.gateway.ethswarm.org'
 const RETRY_ATTEMPTS = 180
 const RETRY_INTERVAL = 20_000
 
@@ -16,9 +22,17 @@ const privateKey = Buffer.from(privateKeyString, 'hex')
 const wallet = Wallet.default.fromPrivateKey(privateKey)
 const topic = Strings.randomHex(64)
 const stamp = '00'.repeat(32)
-const bee = new Bee(HOST)
-const feedWriter = bee.makeFeedWriter('sequence', topic, privateKey)
-const feedReader = bee.makeFeedReader('sequence', topic, wallet.getAddressString())
+const uploaderBee = new Bee(UPLOADER_HOST)
+const downloaderBee = new Bee(DOWNLOADER_HOST)
+const feedWriter = uploaderBee.makeFeedWriter(FEED_TYPE, topic, privateKey)
+const feedReader = downloaderBee.makeFeedReader(FEED_TYPE, topic, wallet.getAddressString())
+let lastReference = null
+let lastKnownIndex = -1
+
+logger.info('Upload host:', UPLOADER_HOST)
+logger.info('Download host:', DOWNLOADER_HOST)
+logger.info('Address:', wallet.getAddressString())
+logger.info('Topic:', topic)
 
 await doInitialWrite()
 while (true) {
@@ -29,9 +43,12 @@ while (true) {
 async function doInitialWrite() {
     const data = Strings.randomAlphanumeric(1)
     logger.info(chalk.blue(`Uploading initial data "${data}"`))
-    const { reference } = await bee.uploadData(stamp, data)
-    logger.info('Writing feed for the first time')
-    await feedWriter.upload(stamp, reference)
+    const { reference } = await uploaderBee.uploadData(stamp, data)
+    lastReference = reference
+    if (USE_FEEDS) {
+        logger.info('Writing feed for the first time with reference', reference)
+        await feedWriter.upload(stamp, reference)
+    }
 }
 
 async function appendFeed() {
@@ -39,12 +56,15 @@ async function appendFeed() {
     logger.info(chalk.green(`Got text "${text}" which is correct`))
     const appendedText = `${text}${Strings.randomAlphanumeric(1)}`
     logger.info(chalk.blue(`Uploading appended data "${appendedText}"`))
-    const { reference } = await bee.uploadData(stamp, appendedText)
-    await updateFeedWithRetry(reference)
+    const { reference } = await uploaderBee.uploadData(stamp, appendedText)
+    lastReference = reference
+    if (USE_FEEDS) {
+        await updateFeedWithRetry(reference)
+    }
 }
 
 async function fetchTextFromFeed() {
-    const reference = await fetchFeedWithRetry()
+    const reference = USE_FEEDS ? await fetchFeedWithRetry() : lastReference
     const text = await downloadDataWithRetry(reference)
     return text
 }
@@ -66,7 +86,7 @@ async function downloadDataWithRetry(reference) {
     for (let i = 0; i < RETRY_ATTEMPTS; i++) {
         logger.info('Attempt', i, 'to download reference', reference)
         try {
-            const data = await bee.downloadData(reference)
+            const data = await downloaderBee.downloadData(reference)
             const text = data.text()
             return text
         } catch (error) {
