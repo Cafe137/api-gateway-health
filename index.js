@@ -1,92 +1,67 @@
 import { Bee } from '@ethersphere/bee-js'
 import { Logger, Strings, System } from 'cafe-utility'
 import chalk from 'chalk'
-import Wallet from 'ethereumjs-wallet'
 
-const USE_LOAD_BALANCER = true
-const USE_FEEDS = false
-const FEED_TYPE = 'sequence'
-
-const UPLOADER_HOST = USE_LOAD_BALANCER
-    ? 'https://api.gateway.ethswarm.org'
-    : 'https://gateway-proxy-bee-3-0.gateway.ethswarm.org'
-const DOWNLOADER_HOST = USE_LOAD_BALANCER
-    ? 'https://api.gateway.ethswarm.org'
-    : 'https://gateway-proxy-bee-4-0.gateway.ethswarm.org'
-const RETRY_ATTEMPTS = 180
-const RETRY_INTERVAL = 20_000
+const deferred = process.argv[2] === '--deferred'
+const UPLOADER_HOST = deferred
+    ? 'https://gateway-proxy-bee-3-0.gateway.ethswarm.org'
+    : 'https://gateway-proxy-bee-7-0.gateway.ethswarm.org'
+const DOWNLOADER_HOST = 'https://gateway-proxy-bee-4-0.gateway.ethswarm.org'
+const RETRY_ATTEMPTS = 3
+const RETRY_INTERVAL = 10_000
+const TIMEOUT_MS = 30_000
 
 const logger = Logger.create(import.meta.url)
-const privateKeyString = Strings.randomHex(64)
-const privateKey = Buffer.from(privateKeyString, 'hex')
-const wallet = Wallet.default.fromPrivateKey(privateKey)
-const topic = Strings.randomHex(64)
 const stamp = '00'.repeat(32)
 const uploaderBee = new Bee(UPLOADER_HOST)
 const downloaderBee = new Bee(DOWNLOADER_HOST)
-const feedWriter = uploaderBee.makeFeedWriter(FEED_TYPE, topic, privateKey)
-const feedReader = downloaderBee.makeFeedReader(FEED_TYPE, topic, wallet.getAddressString())
 let lastReference = null
-let lastKnownIndex = -1
 
 logger.info('Upload host:', UPLOADER_HOST)
 logger.info('Download host:', DOWNLOADER_HOST)
-logger.info('Address:', wallet.getAddressString())
-logger.info('Topic:', topic)
 
-await doInitialWrite()
 while (true) {
-    await appendFeed()
-    await System.sleepMillis(RETRY_INTERVAL)
+    try {
+        await doInitialWrite()
+        while (true) {
+            await appendByte()
+            await System.sleepMillis(RETRY_INTERVAL)
+        }
+    } catch {
+        logger.error('Ran out of retry attempts, restarting loop')
+    }
 }
 
 async function doInitialWrite() {
     const data = Strings.randomAlphanumeric(1)
     logger.info(chalk.blue(`Uploading initial data "${data}"`))
-    const { reference } = await uploaderBee.uploadData(stamp, data)
+    const { reference } = await uploaderBee.uploadData(stamp, data, {
+        deferred,
+        timeout: TIMEOUT_MS
+    })
     lastReference = reference
-    if (USE_FEEDS) {
-        logger.info('Writing feed for the first time with reference', reference)
-        await feedWriter.upload(stamp, reference)
-    }
+    logger.info(`Uploaded "${data}" and got reference "${reference}"`)
 }
 
-async function appendFeed() {
-    const text = await fetchTextFromFeed()
+async function appendByte() {
+    const text = await downloadBytesWithRetry(lastReference)
     logger.info(chalk.green(`Got text "${text}" which is correct`))
     const appendedText = `${text}${Strings.randomAlphanumeric(1)}`
     logger.info(chalk.blue(`Uploading appended data "${appendedText}"`))
-    const { reference } = await uploaderBee.uploadData(stamp, appendedText)
+    const { reference } = await uploaderBee.uploadData(stamp, appendedText, {
+        deferred,
+        timeout: TIMEOUT_MS
+    })
     lastReference = reference
-    if (USE_FEEDS) {
-        await updateFeedWithRetry(reference)
-    }
 }
 
-async function fetchTextFromFeed() {
-    const reference = USE_FEEDS ? await fetchFeedWithRetry() : lastReference
-    const text = await downloadDataWithRetry(reference)
-    return text
-}
-
-async function updateFeedWithRetry(reference) {
-    for (let i = 0; i < RETRY_ATTEMPTS; i++) {
-        logger.info('Attempt', i, 'to update feed with reference', reference)
-        try {
-            await feedWriter.upload(stamp, reference)
-            return
-        } catch (error) {
-            await System.sleepMillis(RETRY_INTERVAL)
-        }
-    }
-    throw Error('Failed to update feed')
-}
-
-async function downloadDataWithRetry(reference) {
+async function downloadBytesWithRetry(reference) {
     for (let i = 0; i < RETRY_ATTEMPTS; i++) {
         logger.info('Attempt', i, 'to download reference', reference)
         try {
-            const data = await downloaderBee.downloadData(reference)
+            const data = await downloaderBee.downloadData(reference, {
+                timeout: TIMEOUT_MS
+            })
             const text = data.text()
             return text
         } catch (error) {
@@ -94,24 +69,4 @@ async function downloadDataWithRetry(reference) {
         }
     }
     throw Error(`Failed to download reference ${reference}`)
-}
-
-async function fetchFeedWithRetry() {
-    for (let i = 0; i < RETRY_ATTEMPTS; i++) {
-        logger.info('Attempt', i, 'to fetch feed')
-        try {
-            const response = await feedReader.download()
-            const feedIndex = parseInt(response.feedIndex, 10)
-            if (feedIndex <= lastKnownIndex) {
-                logger.warn('Got a past feed update of index', feedIndex, 'but expected greater than', lastKnownIndex)
-                throw Error('Outdated')
-            }
-            lastKnownIndex = feedIndex
-            logger.info('Fetched feed, got index', response.feedIndex, 'with reference', response.reference)
-            return response.reference
-        } catch (error) {
-            await System.sleepMillis(RETRY_INTERVAL)
-        }
-    }
-    throw Error('Failed to fetch feed')
 }
