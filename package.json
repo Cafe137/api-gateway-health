@@ -2,7 +2,6 @@
     "name": "swarm-health",
     "version": "1.0.0",
     "description": "",
-    "type": "module",
     "main": "index.js",
     "scripts": {
         "deferred": "node --experimental-modules --es-module-specifier-resolution=node index.js --deferred",
@@ -12,9 +11,13 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
-        "@ethersphere/bee-js": "^3.3.4",
-        "cafe-utility": "^3.0.0",
+        "@ethersphere/bee-js": "^9.1.0",
+        "cafe-node-utility": "^1.1.0",
+        "cafe-utility": "^27.16.1",
         "chalk": "^5.0.1",
         "node-fetch": "^3.2.4"
+    },
+    "devDependencies": {
+        "@types/node": "^22.14.0"
     }
 }

@@ -1,5 +1,6 @@
 import { Bee } from '@ethersphere/bee-js'
-import { Logger, Strings, System } from 'cafe-utility'
+import { Logger } from 'cafe-node-utility'
+import { Strings, System } from 'cafe-utility'
 import chalk from 'chalk'
 
 const deferred = process.argv[2] === '--deferred'
@@ -15,7 +16,7 @@ const logger = Logger.create(import.meta.url)
 const stamp = '00'.repeat(32)
 const uploaderBee = new Bee(UPLOADER_HOST)
 const downloaderBee = new Bee(DOWNLOADER_HOST)
-let lastReference = null
+let lastReference: string | null = null
 
 logger.info('Upload host:', UPLOADER_HOST)
 logger.info('Download host:', DOWNLOADER_HOST)
@@ -35,11 +36,8 @@ while (true) {
 async function doInitialWrite() {
     const data = Strings.randomAlphanumeric(1)
     logger.info(chalk.blue(`Uploading initial data "${data}"`))
-    const { reference } = await uploaderBee.uploadData(stamp, data, {
-        deferred,
-        timeout: TIMEOUT_MS
-    })
-    lastReference = reference
+    const { reference } = await uploaderBee.uploadData(stamp, data, { deferred }, { timeout: TIMEOUT_MS })
+    lastReference = reference.toHex()
     logger.info(`Uploaded "${data}" and got reference "${reference}"`)
 }
 
@@ -48,21 +46,16 @@ async function appendByte() {
     logger.info(chalk.green(`Got text "${text}" which is correct`))
     const appendedText = `${text}${Strings.randomAlphanumeric(1)}`
     logger.info(chalk.blue(`Uploading appended data "${appendedText}"`))
-    const { reference } = await uploaderBee.uploadData(stamp, appendedText, {
-        deferred,
-        timeout: TIMEOUT_MS
-    })
-    lastReference = reference
+    const { reference } = await uploaderBee.uploadData(stamp, appendedText, { deferred }, { timeout: TIMEOUT_MS })
+    lastReference = reference.toHex()
 }
 
 async function downloadBytesWithRetry(reference) {
     for (let i = 0; i < RETRY_ATTEMPTS; i++) {
         logger.info('Attempt', i, 'to download reference', reference)
         try {
-            const data = await downloaderBee.downloadData(reference, {
-                timeout: TIMEOUT_MS
-            })
-            const text = data.text()
+            const data = await downloaderBee.downloadData(reference, undefined, { timeout: TIMEOUT_MS })
+            const text = data.toUtf8()
             return text
         } catch (error) {
             await System.sleepMillis(RETRY_INTERVAL)
